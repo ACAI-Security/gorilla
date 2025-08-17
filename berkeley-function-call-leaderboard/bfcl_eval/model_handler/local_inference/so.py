@@ -23,7 +23,7 @@ class SOHandler(BaseHandler):
         
         tools = [{"type": "function", "name": f["name"], "description": f["description"], "parameters": f["parameters"]} for f in functions]
         
-        request_data = {"model": "gpt-4", "type": "start", "input": messages}
+        request_data = {"model": "", "type": "start", "input": messages}
         if tools:
             request_data["tools"] = tools
             
@@ -72,6 +72,53 @@ class SOHandler(BaseHandler):
 
     @override
     def decode_ast(self, result, language="Python"):
+        import json
+        import ast
+        
+        # Handle different error cases
+        if isinstance(result, dict) and 'info' in result:
+            if 'JSON serializable' in result['info'] or 'Execution failed' in result['info']:
+                return []
+        
+        # Handle ResponseError cases
+        if isinstance(result, str) and result.startswith("ResponseError("):
+            return []
+        
+        # Handle ResponseFnCall format: ResponseFnCall(value={'function_call': {'name': '...', 'arguments': '...'}}, info="...")
+        if isinstance(result, str) and result.startswith("ResponseFnCall("):
+            try:
+                # Use ast.literal_eval to safely parse the Python object
+                # Extract the value parameter from ResponseFnCall(value=..., info=...)
+                start_idx = result.find("value=") + 6
+                # Find the matching closing parenthesis for the value dict
+                depth = 0
+                end_idx = start_idx
+                for i, char in enumerate(result[start_idx:]):
+                    if char == '{':
+                        depth += 1
+                    elif char == '}':
+                        depth -= 1
+                        if depth == 0:
+                            end_idx = start_idx + i + 1
+                            break
+                
+                value_str = result[start_idx:end_idx]
+                value_dict = ast.literal_eval(value_str)
+                
+                if 'function_call' in value_dict:
+                    func_call = value_dict['function_call']
+                    name = func_call['name']
+                    # Parse arguments JSON string
+                    args_str = func_call['arguments']
+                    args_dict = json.loads(args_str)
+                    
+                    # Return in BFCL expected format: [{"function_name": {"param": "value"}}]
+                    return [{name: args_dict}]
+            except (ValueError, SyntaxError, json.JSONDecodeError, KeyError) as e:
+                print(f"Debug: Failed to parse ResponseFnCall: {e}")
+                return []
+        
+        # Fallback to default decoder
         return default_decode_ast_prompting(result, language)
 
     @override
