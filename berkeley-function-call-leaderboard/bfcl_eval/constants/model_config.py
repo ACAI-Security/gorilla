@@ -70,6 +70,7 @@ from bfcl_eval.model_handler.local_inference.salesforce_qwen import (
 )
 from bfcl_eval.model_handler.local_inference.think_agent import ThinkAgentHandler
 from bfcl_eval.model_handler.api_inference.kimi import KimiHandler
+from bfcl_eval.model_handler.local_inference.so import SOHandler
 
 # -----------------------------------------------------------------------------
 # A mapping of model identifiers to their respective model configurations.
@@ -2055,6 +2056,18 @@ third_party_inference_model_map = {
         org="katanemo",
         license="katanemo-research",
         model_handler=ArchHandler,
+        input_price=None,
+        output_price=None,
+        is_fc_model=True,
+        underscore_to_dot=False,
+    ),
+    "squerity/SecurityOrchestrator": ModelConfig(
+        model_name="gpt4-oss",
+        display_name="SecurityOrchestrator",
+        url="",
+        org="ACAI",
+        license="ACAI",
+        model_handler=SOHandler,
         input_price=None,
         output_price=None,
         is_fc_model=True,
