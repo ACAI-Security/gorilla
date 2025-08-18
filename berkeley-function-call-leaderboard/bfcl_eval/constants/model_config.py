@@ -71,6 +71,7 @@ from bfcl_eval.model_handler.local_inference.salesforce_qwen import (
 from bfcl_eval.model_handler.local_inference.think_agent import ThinkAgentHandler
 from bfcl_eval.model_handler.api_inference.kimi import KimiHandler
 from bfcl_eval.model_handler.local_inference.so import SOHandler
+from bfcl_eval.model_handler.local_inference.gpt4 import GPT4Handler
 
 # -----------------------------------------------------------------------------
 # A mapping of model identifiers to their respective model configurations.
@@ -2070,6 +2071,18 @@ third_party_inference_model_map = {
         model_handler=SOHandler,
         input_price=None,
         output_price=None,
+        is_fc_model=True,
+        underscore_to_dot=False,
+    ),
+    "openai/gpt-4o-2024-11-20": ModelConfig(
+        model_name="openai/gpt-4o-2024-11-20",
+        display_name="GPT-4O via OpenRouter",
+        url="https://openrouter.ai",
+        org="OpenRouter",
+        license="Open Source",
+        model_handler=GPT4Handler,
+        input_price=0.00000,
+        output_price=0.00000,
         is_fc_model=True,
         underscore_to_dot=False,
     ),

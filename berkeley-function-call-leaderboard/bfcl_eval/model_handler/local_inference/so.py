@@ -36,7 +36,21 @@ class SOHandler(BaseHandler):
     @override
     def _parse_query_response_prompting(self, api_response) -> dict:
         response_json = api_response.json()
-        content = response_json["choices"][0]["message"]["content"] if "choices" in response_json else str(response_json)
+        
+        if "choices" in response_json:
+            message = response_json["choices"][0]["message"]
+            
+            # Check if there's a function_call in the response
+            if "function_call" in message and message["function_call"]:
+                # Return the function call in the expected format
+                func_call = message["function_call"]
+                msg_content = message.get('content', '').replace("'", "\\'")  # Escape single quotes
+                content = f"ResponseFnCall(value={{'function_call': {{'name': '{func_call['name']}', 'arguments': '{func_call['arguments']}'}}, 'message': '{msg_content}'}}, info='{msg_content}')"
+            else:
+                # No function call, just return content
+                content = message.get("content", "")
+        else:
+            content = str(response_json)
         
         return {
             "model_responses": content,
@@ -80,6 +94,10 @@ class SOHandler(BaseHandler):
             if 'JSON serializable' in result['info'] or 'Execution failed' in result['info']:
                 return []
         
+        # Handle string dict format for serialization errors: "{'info': 'Stopped because Object of type SOInt is not JSON serializable'}"
+        if isinstance(result, str) and result.startswith("{'info':") and 'JSON serializable' in result:
+            return []
+        
         # Handle ResponseError cases
         if isinstance(result, str) and result.startswith("ResponseError("):
             return []
@@ -111,6 +129,14 @@ class SOHandler(BaseHandler):
                     # Parse arguments JSON string
                     args_str = func_call['arguments']
                     args_dict = json.loads(args_str)
+                    
+                    # Convert integer 0/1 to boolean false/true for BFCL compatibility
+                    for key, value in args_dict.items():
+                        if isinstance(value, int) and value in [0, 1]:
+                            # Check if this might be a boolean by looking at parameter name patterns
+                            boolean_patterns = ['formatted', 'detailed', 'include', 'specific', 'enabled', 'active', 'visible', 'required', 'show', 'display', 'verbose', 'debug']
+                            if any(pattern in key.lower() for pattern in boolean_patterns):
+                                args_dict[key] = bool(value)
                     
                     # Return in BFCL expected format: [{"function_name": {"param": "value"}}]
                     return [{name: args_dict}]
