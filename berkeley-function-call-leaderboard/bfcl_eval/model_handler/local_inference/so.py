@@ -21,9 +21,18 @@ class SOHandler(BaseHandler):
         messages = inference_data["message"]
         functions = inference_data["function"]
         
-        tools = [{"type": "function", "name": f["name"], "description": f["description"], "parameters": f["parameters"]} for f in functions]
+        # New format: wrap function details in "function" object
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": f["name"], 
+                "description": f["description"], 
+                "parameters": f["parameters"]
+            },
+            "strict": True
+        } for f in functions]
         
-        request_data = {"model": "", "type": "start", "input": messages}
+        request_data = {"model": "", "type": "start", "messages": messages}
         if tools:
             request_data["tools"] = tools
             
@@ -105,42 +114,45 @@ class SOHandler(BaseHandler):
         # Handle ResponseFnCall format: ResponseFnCall(value={'function_call': {'name': '...', 'arguments': '...'}}, info="...")
         if isinstance(result, str) and result.startswith("ResponseFnCall("):
             try:
-                # Use ast.literal_eval to safely parse the Python object
-                # Extract the value parameter from ResponseFnCall(value=..., info=...)
-                start_idx = result.find("value=") + 6
-                # Find the matching closing parenthesis for the value dict
-                depth = 0
-                end_idx = start_idx
-                for i, char in enumerate(result[start_idx:]):
-                    if char == '{':
-                        depth += 1
-                    elif char == '}':
-                        depth -= 1
-                        if depth == 0:
-                            end_idx = start_idx + i + 1
-                            break
+                # Use regex to extract function name and arguments more reliably
+                import re
                 
-                value_str = result[start_idx:end_idx]
-                value_dict = ast.literal_eval(value_str)
+                # Extract function name
+                name_match = re.search(r"'name':\s*'([^']+)'", result)
+                if not name_match:
+                    print("Debug: Could not extract function name")
+                    return []
                 
-                if 'function_call' in value_dict:
-                    func_call = value_dict['function_call']
-                    name = func_call['name']
-                    # Parse arguments JSON string
-                    args_str = func_call['arguments']
-                    args_dict = json.loads(args_str)
-                    
-                    # Convert integer 0/1 to boolean false/true for BFCL compatibility
-                    for key, value in args_dict.items():
-                        if isinstance(value, int) and value in [0, 1]:
-                            # Check if this might be a boolean by looking at parameter name patterns
-                            boolean_patterns = ['formatted', 'detailed', 'include', 'specific', 'enabled', 'active', 'visible', 'required', 'show', 'display', 'verbose', 'debug']
-                            if any(pattern in key.lower() for pattern in boolean_patterns):
-                                args_dict[key] = bool(value)
-                    
-                    # Return in BFCL expected format: [{"function_name": {"param": "value"}}]
-                    return [{name: args_dict}]
-            except (ValueError, SyntaxError, json.JSONDecodeError, KeyError) as e:
+                name = name_match.group(1)
+                
+                # Extract arguments JSON string
+                args_match = re.search(r"'arguments':\s*'([^']+)'", result)
+                if not args_match:
+                    args_match = re.search(r"'arguments':\s*\"([^\"]+)\"", result)
+                
+                if not args_match:
+                    print("Debug: Could not extract arguments")
+                    return []
+                
+                args_str = args_match.group(1)
+                # Unescape any escaped quotes
+                args_str = args_str.replace('\\"', '"').replace("\\'", "'")
+                
+                # Parse arguments JSON string
+                args_dict = json.loads(args_str)
+                
+                # Convert integer 0/1 to boolean false/true for BFCL compatibility
+                for key, value in args_dict.items():
+                    if isinstance(value, int) and value in [0, 1]:
+                        # Check if this might be a boolean by looking at parameter name patterns
+                        boolean_patterns = ['formatted', 'detailed', 'include', 'specific', 'enabled', 'active', 'visible', 'required', 'show', 'display', 'verbose', 'debug']
+                        if any(pattern in key.lower() for pattern in boolean_patterns):
+                            args_dict[key] = bool(value)
+                
+                # Return in BFCL expected format: [{"function_name": {"param": "value"}}]
+                return [{name: args_dict}]
+                
+            except (json.JSONDecodeError, KeyError, AttributeError) as e:
                 print(f"Debug: Failed to parse ResponseFnCall: {e}")
                 return []
         
@@ -160,8 +172,8 @@ class SOHandler(BaseHandler):
     @override
     def _compile_tools(self, inference_data: dict, test_entry: dict) -> dict:
         functions = func_doc_language_specific_pre_processing(test_entry["function"], test_entry["id"].rsplit("_", 1)[0])
-        tools = [{"type": "function", "name": f["name"], "description": f["description"], "parameters": f["parameters"]} for f in functions]
-        inference_data["tools"] = tools
+        # Store raw functions for _query_FC to format properly
+        inference_data["tools"] = functions
         return inference_data
 
     @override
@@ -171,14 +183,26 @@ class SOHandler(BaseHandler):
         
         # Tools only sent on first request (type: "start")
         is_first_request = len(messages) <= 1
+        
+        # New format: wrap function details in "function" object
+        formatted_tools = [{
+            "type": "function",
+            "function": {
+                "name": tool["name"], 
+                "description": tool["description"], 
+                "parameters": tool["parameters"]
+            },
+            "strict": True
+        } for tool in tools] if tools else []
+        
         request_data = {
             "model": "gpt-4", 
             "type": "start" if is_first_request else "continue",
-            "input": messages
+            "messages": messages
         }
         
-        if is_first_request and tools:
-            request_data["tools"] = tools
+        if is_first_request and formatted_tools:
+            request_data["tools"] = formatted_tools
             
         start_time = time.time()
         response = requests.post(f"{self.base_url}/v1/chat/completions", json=request_data, timeout=30)
