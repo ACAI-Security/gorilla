@@ -2,6 +2,7 @@ import json
 import os
 import time
 from typing import Any
+import requests
 
 from bfcl_eval.constants.type_mappings import GORILLA_TO_OPENAPI
 from bfcl_eval.model_handler.base_handler import BaseHandler
@@ -17,13 +18,16 @@ from bfcl_eval.model_handler.utils import (
     system_prompt_pre_processing_chat_model,
 )
 from openai import OpenAI, RateLimitError
+from openai.types.chat import ChatCompletion
+
 
 
 class OpenAICompletionsHandler(BaseHandler):
     def __init__(self, model_name, temperature) -> None:
         super().__init__(model_name, temperature)
         self.model_style = ModelStyle.OpenAI_Completions
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        self.base_url = "http://localhost:8000"
+        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=self.base_url)
 
     def decode_ast(self, result, language="Python"):
         if "FC" in self.model_name or self.is_fc_model:
@@ -45,10 +49,14 @@ class OpenAICompletionsHandler(BaseHandler):
     @retry_with_backoff(error_type=RateLimitError)
     def generate_with_backoff(self, **kwargs):
         start_time = time.time()
-        api_response = self.client.chat.completions.create(**kwargs)
+        # request_data = json.dumps(kwargs)
+        api_response = requests.post(
+            f"{self.base_url}/v1/chat/completions", json=kwargs)
+        # api_response = self.client.chat.completions.create(**kwargs)
         end_time = time.time()
+        api_response = api_response.json()
 
-        return api_response, end_time - start_time
+        return ChatCompletion(**api_response), end_time - start_time
 
     #### FC methods ####
 
@@ -66,7 +74,6 @@ class OpenAICompletionsHandler(BaseHandler):
 
         if len(tools) > 0:
             kwargs["tools"] = tools
-
         return self.generate_with_backoff(**kwargs)
 
     def _pre_query_processing_FC(self, inference_data: dict, test_entry: dict) -> dict:
@@ -103,8 +110,8 @@ class OpenAICompletionsHandler(BaseHandler):
             "model_responses": model_responses,
             "model_responses_message_for_chat_history": model_responses_message_for_chat_history,
             "tool_call_ids": tool_call_ids,
-            "input_token": api_response.usage.prompt_tokens,
-            "output_token": api_response.usage.completion_tokens,
+            "input_token": 0,
+            "output_token": 0,
         }
 
     def add_first_turn_message_FC(
@@ -195,6 +202,8 @@ class OpenAICompletionsHandler(BaseHandler):
 
     def _query_prompting(self, inference_data: dict):
         inference_data["inference_input_log"] = {"message": repr(inference_data["message"])}
+
+        # kwargs = {"messages"=inference_data["message"], model=self.model_name, temperature=self.temperature, store=False,}
 
         return self.generate_with_backoff(
             messages=inference_data["message"],

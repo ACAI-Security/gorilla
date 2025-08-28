@@ -28,11 +28,10 @@ class SOHandler(BaseHandler):
                 "name": f["name"], 
                 "description": f["description"], 
                 "parameters": f["parameters"]
-            },
-            "strict": True
+            }
         } for f in functions]
         
-        request_data = {"model": "", "type": "start", "messages": messages}
+        request_data = {"model": "gpt-4", "messages": messages}
         if tools:
             request_data["tools"] = tools
             
@@ -46,11 +45,32 @@ class SOHandler(BaseHandler):
     def _parse_query_response_prompting(self, api_response) -> dict:
         response_json = api_response.json()
         
+        # Handle error responses from the endpoint
+        if "detail" in response_json and "error" in str(response_json["detail"]):
+            error_msg = str(response_json["detail"])
+            return {
+                "model_responses": f"Error: {error_msg}",
+                "input_token": 0,
+                "output_token": 0,
+            }
+        
         if "choices" in response_json:
             message = response_json["choices"][0]["message"]
             
-            # Check if there's a function_call in the response
-            if "function_call" in message and message["function_call"]:
+            # Check if there are tool_calls in the response (new format)
+            if "tool_calls" in message and message["tool_calls"]:
+                # Handle tool_calls format (OpenAI v1.1+)
+                tool_calls = message["tool_calls"]
+                if tool_calls and len(tool_calls) > 0:
+                    # Take the first tool call
+                    tool_call = tool_calls[0]
+                    func_call = tool_call.get("function", {})
+                    msg_content = message.get('content', '').replace("'", "\\'")  # Escape single quotes
+                    content = f"ResponseFnCall(value={{'function_call': {{'name': '{func_call.get('name', '')}', 'arguments': '{func_call.get('arguments', '')}'}}, 'message': '{msg_content}'}}, info='{msg_content}')"
+                else:
+                    content = message.get("content", "")
+            # Check if there's a function_call in the response (legacy format)
+            elif "function_call" in message and message["function_call"]:
                 # Return the function call in the expected format
                 func_call = message["function_call"]
                 msg_content = message.get('content', '').replace("'", "\\'")  # Escape single quotes
@@ -60,6 +80,12 @@ class SOHandler(BaseHandler):
                 content = message.get("content", "")
         else:
             content = str(response_json)
+        if response_json.get("usage") is None:
+            return {
+                "model_responses": content,
+                "input_token": 0,
+                "output_token": 0,
+            }
         
         return {
             "model_responses": content,
@@ -181,7 +207,7 @@ class SOHandler(BaseHandler):
         messages = inference_data["message"]
         tools = inference_data.get("tools", [])
         
-        # Tools only sent on first request (type: "start")
+        # Tools sent on first request only
         is_first_request = len(messages) <= 1
         
         # New format: wrap function details in "function" object
@@ -191,13 +217,11 @@ class SOHandler(BaseHandler):
                 "name": tool["name"], 
                 "description": tool["description"], 
                 "parameters": tool["parameters"]
-            },
-            "strict": True
+            }
         } for tool in tools] if tools else []
         
         request_data = {
-            "model": "gpt-4", 
-            "type": "start" if is_first_request else "continue",
+            "model": "gpt-4",
             "messages": messages
         }
         
