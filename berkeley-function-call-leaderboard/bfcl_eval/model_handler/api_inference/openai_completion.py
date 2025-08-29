@@ -28,6 +28,7 @@ class OpenAICompletionsHandler(BaseHandler):
         self.model_style = ModelStyle.OpenAI_Completions
         self.base_url = "http://localhost:8000"
         self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=self.base_url)
+        self.session_id = None
 
     def decode_ast(self, result, language="Python"):
         if "FC" in self.model_name or self.is_fc_model:
@@ -42,6 +43,8 @@ class OpenAICompletionsHandler(BaseHandler):
 
     def decode_execute(self, result):
         if "FC" in self.model_name or self.is_fc_model:
+            if 'final_return_value' in result:
+                return []
             return convert_to_function_call(result)
         else:
             return default_decode_execute_prompting(result)
@@ -50,13 +53,45 @@ class OpenAICompletionsHandler(BaseHandler):
     def generate_with_backoff(self, **kwargs):
         start_time = time.time()
         # request_data = json.dumps(kwargs)
+        headers = {"Content-Type": "application/json"}
+        if self.session_id:
+            headers["X-Session-ID"] = self.session_id
         api_response = requests.post(
-            f"{self.base_url}/v1/chat/completions", json=kwargs)
+            f"{self.base_url}/v1/chat/completions", 
+            json=kwargs,
+            headers=headers,
+            timeout=3000,
+            )
         # api_response = self.client.chat.completions.create(**kwargs)
         end_time = time.time()
-        api_response = api_response.json()
+        # Check for server errors
+        if api_response.status_code >= 400:
+            raise Exception(f"Server error {api_response.status_code}: {api_response.text}")
+            
+        # Handle empty responses
+        if not api_response.text.strip():
+            raise Exception(f"Empty response from server. Status: {api_response.status_code}")
+            
+        try:
+            response_json = api_response.json()
+        except json.JSONDecodeError as e:
+            raise Exception(f"Invalid JSON response. Status: {api_response.status_code}, Error: {e}, Response: {api_response.text[:500]}")
+        
+        # Ensure response_json is a dictionary
+        if not isinstance(response_json, dict):
+            raise Exception(f"Response is not a dictionary: {type(response_json)}, Content: {response_json}")
+        
+        # Transform the custom usage format to OpenAI standard format
+        if 'usage' in response_json and 'session' in response_json['usage']:
+            # Extract the session token usage and flatten it to match OpenAI format
+            session_usage = response_json['usage']['session']['token_usage']
+            response_json['usage'] = {
+                'prompt_tokens': session_usage['prompt_tokens'],
+                'completion_tokens': session_usage['completion_tokens'], 
+                'total_tokens': session_usage['total_tokens']
+            }
 
-        return ChatCompletion(**api_response), end_time - start_time
+        return ChatCompletion(**response_json), end_time - start_time
 
     #### FC methods ####
 
@@ -74,7 +109,12 @@ class OpenAICompletionsHandler(BaseHandler):
 
         if len(tools) > 0:
             kwargs["tools"] = tools
-        return self.generate_with_backoff(**kwargs)
+            
+        # Include session_id for multi-turn conversation continuity
+        if "session_id" in inference_data:
+            kwargs["session_id"] = inference_data["session_id"]
+        res = self.generate_with_backoff(**kwargs)
+        return res
 
     def _pre_query_processing_FC(self, inference_data: dict, test_entry: dict) -> dict:
         inference_data["message"] = []
@@ -104,14 +144,38 @@ class OpenAICompletionsHandler(BaseHandler):
             model_responses = api_response.choices[0].message.content
             tool_call_ids = []
 
-        model_responses_message_for_chat_history = api_response.choices[0].message
+        # Convert ChatCompletionMessage to dict for JSON serialization
+        message = api_response.choices[0].message
+        model_responses_message_for_chat_history = {
+            "role": message.role,
+            "content": message.content
+        }
+        
+        # Add tool_calls if they exist
+        if hasattr(message, 'tool_calls') and message.tool_calls:
+            model_responses_message_for_chat_history["tool_calls"] = [
+                {
+                    "id": tool_call.id,
+                    "type": tool_call.type,
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments
+                    }
+                }
+                for tool_call in message.tool_calls
+            ]
+
+        # Extract usage information if available
+        input_tokens = getattr(api_response.usage, 'prompt_tokens', 0) if hasattr(api_response, 'usage') and api_response.usage else 0
+        output_tokens = getattr(api_response.usage, 'completion_tokens', 0) if hasattr(api_response, 'usage') and api_response.usage else 0
+        self.session_id = getattr(api_response, "id", None)  if hasattr(api_response, "id") and api_response.id else None
 
         return {
             "model_responses": model_responses,
             "model_responses_message_for_chat_history": model_responses_message_for_chat_history,
             "tool_call_ids": tool_call_ids,
-            "input_token": 0,
-            "output_token": 0,
+            "input_token": input_tokens,
+            "output_token": output_tokens,
         }
 
     def add_first_turn_message_FC(
